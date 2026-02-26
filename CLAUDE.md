@@ -11,8 +11,8 @@ Package namespace: `com.bob.sparkcoverage`
 ## Tech Stack
 
 - **Scala 2.13** with **Maven** (scala-maven-plugin)
-- **Apache Spark 3.5.x** — CatalystSqlParser for SQL parsing, QueryExecutionListener for runtime engine (provided scope)
-- **DuckDB** — embedded SQL engine for the static coverage engine
+- **Apache Spark 3.5.x** — CatalystSqlParser for SQL parsing, SparkSession for predicate evaluation, QueryExecutionListener for catalyst engine (provided scope)
+- **Jackson** — YAML config file parsing (bundled with Spark, no extra dependency)
 - **scopt** — CLI argument parsing
 - **ScalaTest** — testing framework
 
@@ -27,26 +27,10 @@ mvn package          # Build fat JAR (with shade plugin)
 
 ## Architecture
 
-Two-engine design behind a shared `CoverageEngine` trait:
+Two-engine design behind a shared `CoverageEngine` trait. See `plans/implementation-plan.md` for detailed project structure, data models, key interfaces, and algorithm specifics.
 
-- **StaticCoverageEngine** — Loads CSVs into DuckDB in-memory, evaluates predicates via SQL. No Spark runtime needed. Fast (~seconds). Best for CI/CD and local dev.
-- **CatalystCoverageEngine** — Uses a SparkSession to load CSVs and execute SQL. Can detect optimizer-pruned branches by comparing analyzed vs optimized plans. Full Spark SQL dialect compatibility.
-
-Shared components:
-- **ExpressionExtractor** — Walks Catalyst AST (LogicalPlan/Expression trees) to find coverable expressions
-- **PredicateExtractor** — Derives testable SQL predicates from each coverable expression
-- **SqlFileParser** — Reads `.sql` files, splits on semicolons, tracks line numbers
-- **DataSourceConfig** — Maps table names to CSV files via YAML config (`coverage-config.yaml`) with convention-based fallback (`<data-dir>/<tableName>.csv`)
-- **LineageTracer** — Column-level data flow tracking through SQL transformations
-- **Reporters** — CLI (ANSI-colored), HTML (highlighted SQL spans), JSON (machine-readable for CI/CD)
-
-## Coverage Algorithm
-
-1. Parse `.sql` files into SQL statements
-2. Walk Catalyst AST to extract coverable expressions (CASE_BRANCH, CASE_ELSE, WHERE_PREDICATE, JOIN_CONDITION, HAVING_PREDICATE, COALESCE_BRANCH, IF_BRANCH, NULLIF_BRANCH, SUBQUERY_PREDICATE, FILTER_PREDICATE)
-3. Derive a testable predicate for each expression (e.g., `CASE WHEN status = 'active'` becomes predicate `status = 'active'`)
-4. Evaluate each predicate: `SELECT EXISTS (SELECT 1 FROM <table> WHERE <predicate>)`
-5. If any row satisfies the predicate, the expression is covered
+- **BasicCoverageEngine** — SparkSession-based. Loads CSVs, generates check queries, evaluates coverage.
+- **CatalystCoverageEngine** — Extends Basic. Uses QueryExecutionListener to detect optimizer-pruned branches.
 
 ## Testing
 
