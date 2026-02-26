@@ -55,6 +55,15 @@ Both plugins must be configured in the `pom.xml`. To run all quality checks toge
 mvn verify                # Runs tests + dependency-check + spotbugs
 ```
 
+## Branching
+
+**Never push directly to `main`.** All work must happen on feature branches and be merged via pull requests.
+
+- Create a feature branch for each feature: `feature/<feature-name>` (e.g., `feature/html-reporter`)
+- When the feature is complete, create a PR against `main` using `gh pr create`
+- **Parallel sub-agents**: When multiple agents work on different features in parallel, each agent creates its own feature branch. All agent feature branches should PR into a shared integration branch (e.g., `feature/phase-1`). Once all work is integrated there, create a single PR from the shared branch into `main`.
+- Do not merge your own PR — leave it for review
+
 ## Plans
 
 **The plan is always the first step.** Before any implementation begins on a new feature, you must write and commit a plan document. No code should be written, no files created or modified, until the plan exists and has been reviewed.
