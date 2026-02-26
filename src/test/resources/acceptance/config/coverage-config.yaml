@@ -1,0 +1,4 @@
+dataSources:
+  orders: acceptance/data/orders.csv
+  customers: acceptance/data/customers.csv
+  products: acceptance/data/products.csv

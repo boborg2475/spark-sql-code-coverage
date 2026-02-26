@@ -1,0 +1,9 @@
+order_id,customer_id,product_id,amount,status,discount,notes,description
+1,101,201,150.00,active,10.00,shipped; delivered,Regular order
+2,102,202,75.50,pending,,pending; review,Rush order
+3,101,203,1200.00,active,50.00,shipped; delivered,Bulk order
+4,103,201,30.00,completed,,completed,Small order
+5,102,204,500.00,active,25.00,in transit,N/A; not applicable
+6,101,202,90.00,cancelled,,cancelled,Test order
+7,103,203,2000.00,completed,100.00,shipped; delivered,Enterprise order
+8,104,201,60.00,active,,pending; review,Standard order

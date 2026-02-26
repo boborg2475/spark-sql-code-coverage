@@ -1,0 +1,5 @@
+product_id,product_name,price,active
+201,Widget A,49.99,true
+202,Widget B,150.00,true
+203,Premium Gadget,1500.00,true
+204,Basic Tool,25.00,false
