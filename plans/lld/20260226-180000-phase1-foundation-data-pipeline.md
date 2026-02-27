@@ -9,7 +9,7 @@ Prove the core infrastructure works end-to-end: parse SQL files, load CSV test d
 | Component | File | Purpose |
 |---|---|---|
 | `ExpressionType` | `model/ExpressionType.scala` | Sealed trait with 10 coverable expression types |
-| `CoverageModels` | `model/CoverageModels.scala` | All data model case classes (SqlStatement, coverage hierarchy, lineage types, DataSource, ExecutionResult, ExecutionStatus) |
+| `CoverageModels` | `model/CoverageModels.scala` | All data model types (SqlStatement, coverage hierarchy, lineage types, DataSource, ExecutionResult ADT, QueryResult) |
 | `SqlFileParser` | `parser/SqlFileParser.scala` | Reads `.sql` files, strips comments, splits on semicolons, tracks line numbers |
 | `DataSourceConfig` | `config/DataSourceConfig.scala` | YAML config parsing + convention-based `tableName.csv` fallback |
 | `DataLoader` | `engine/DataLoader.scala` | Loads CSV files into Spark temporary views |
@@ -70,35 +70,36 @@ src/test/resources/
 ### 3.1 Execution Models (`CoverageModels.scala`)
 
 ```scala
-/** Status of a single SQL statement execution. */
-sealed trait ExecutionStatus
-object ExecutionStatus {
-  case object Success extends ExecutionStatus
-  case object Skipped extends ExecutionStatus   // DDL or non-coverable statement
-  case object Error extends ExecutionStatus     // Syntax error, missing table, etc.
-}
-
-/** Result of executing a single SQL statement against Spark. */
-case class ExecutionResult(
-  statement: SqlStatement,
-  status: ExecutionStatus,
-  rowCount: Option[Long],       // Number of rows returned (Success only)
-  schema: Option[Seq[String]],  // Column names from result schema (Success only)
-  error: Option[String]         // Error message (Error status only)
+/** Successful query execution result. */
+case class QueryResult(
+  rowCount: Long,
+  schema: Seq[String]           // Column names from result schema
 )
+
+/** Result of processing a single SQL statement. */
+sealed trait ExecutionResult {
+  def statement: SqlStatement
+}
+object ExecutionResult {
+  /** DDL or non-coverable statement — classified and skipped without execution. */
+  case class Skipped(statement: SqlStatement) extends ExecutionResult
+  /** DML statement that was attempted. Success holds QueryResult, Failure holds the exception. */
+  case class Executed(statement: SqlStatement, result: Try[QueryResult]) extends ExecutionResult
+}
 ```
 
 **Design decisions:**
 
-- `schema` stores column names as `Seq[String]` rather than Spark's `StructType` to avoid leaking Spark types into the model layer. This keeps the models serializable and testable without a Spark dependency.
-- `rowCount` and `schema` are `Option` because they are only populated on successful SELECT-type executions.
-- `error` captures the exception message for diagnostics. Full stack traces go to the logger, not the model.
+- `ExecutionResult` is a sealed trait with two cases rather than a case class with a status enum. `Skipped` vs `Executed` is a classification decision, not an error — modeled as distinct types rather than overloading a single class with optional fields.
+- `Executed` wraps `Try[QueryResult]` — `Success` for statements that ran, `Failure` preserving the full exception. This mirrors the `DataLoader` pattern and lets callers use standard `Try` combinators (`map`, `recover`, pattern matching).
+- `QueryResult` uses `Seq[String]` for schema (column names only) rather than Spark's `StructType` to avoid leaking Spark types into the model layer. This keeps models serializable and testable without a Spark dependency.
+- No separate `ExecutionStatus` enum — the type hierarchy and `Try` express all three states (skipped, success, error) without optional fields.
 
 ### 3.2 DataLoader
 
 **File:** `src/main/scala/com/bob/sparkcoverage/engine/DataLoader.scala`
 
-**Responsibility:** Given a `Map[String, Path]` (table name to CSV path) and a `SparkSession`, load each CSV file into a temporary view with the corresponding table name. Returns a `Try[DataFrame]` per table — `Success` with the registered DataFrame, or `Failure` with the exception encountered.
+**Responsibility:** Given a `Map[String, Path]` (table name to CSV path), load each CSV file into a temporary view with the corresponding table name. Returns a `Try[DataFrame]` per table — `Success` with the registered DataFrame, or `Failure` with the exception encountered.
 
 ```scala
 package com.bob.sparkcoverage.engine
@@ -107,11 +108,10 @@ import java.nio.file.Path
 import scala.util.Try
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
-object DataLoader {
+class DataLoader(spark: SparkSession) {
 
   def loadAll(
-    dataSources: Map[String, Path],
-    spark: SparkSession
+    dataSources: Map[String, Path]
   ): Map[String, Try[DataFrame]]
 }
 ```
@@ -152,19 +152,18 @@ object DataLoader {
 
 **File:** `src/main/scala/com/bob/sparkcoverage/engine/SqlExecutor.scala`
 
-**Responsibility:** Given a sequence of `SqlStatement`s and a `SparkSession` (with tables already loaded), execute each statement and return structured results. Handles DDL classification, per-statement error recovery, and result capture.
+**Responsibility:** Given a sequence of `SqlStatement`s (with tables already loaded via `DataLoader`), execute each statement and return structured results. Handles DDL classification, per-statement error recovery, and result capture.
 
 ```scala
 package com.bob.sparkcoverage.engine
 
-import com.bob.sparkcoverage.model.CoverageModels.{ExecutionResult, ExecutionStatus, SqlStatement}
+import com.bob.sparkcoverage.model.CoverageModels.{ExecutionResult, QueryResult, SqlStatement}
 import org.apache.spark.sql.SparkSession
 
-object SqlExecutor {
+class SqlExecutor(spark: SparkSession) {
 
   def executeAll(
-    statements: Seq[SqlStatement],
-    spark: SparkSession
+    statements: Seq[SqlStatement]
   ): Seq[ExecutionResult]
 
   /** Classify a SQL statement as DDL (skippable) or DML (executable). */
@@ -176,10 +175,9 @@ object SqlExecutor {
 
 1. For each `SqlStatement` in the input sequence:
    a. **Normalize:** Trim the SQL and extract the first keyword (uppercase).
-   b. **Classify:** Call `isDdl(sql)`. If DDL, return `ExecutionResult` with `status = Skipped`.
-   c. **Execute:** Call `spark.sql(statement.sql)` to get a `DataFrame`.
-   d. **Capture:** Call `df.count()` for row count. Extract column names from `df.schema.fieldNames`.
-   e. **Error recovery:** If `spark.sql(...)` or `df.count()` throws an exception, catch it and return `ExecutionResult` with `status = Error` and the exception message. Continue processing the next statement.
+   b. **Classify:** Call `isDdl(sql)`. If DDL, return `ExecutionResult.Skipped(statement)`.
+   c. **Execute:** Wrap execution in a `Try`: call `spark.sql(statement.sql)` to get a `DataFrame`, then `df.count()` for row count, and `df.schema.fieldNames` for column names. Construct a `QueryResult`.
+   d. Return `ExecutionResult.Executed(statement, result)` — where `result` is `Success(QueryResult(...))` or `Failure(exception)`.
 2. Return all `ExecutionResult`s.
 
 **DDL Classification (`isDdl`):**
@@ -198,21 +196,21 @@ The first-keyword approach is simple and sufficient for Phase 1. Phase 2's expre
 
 | Scenario | Behavior |
 |---|---|
-| Syntax error in SQL | `spark.sql()` throws `ParseException`. Caught → `ExecutionResult(status=Error, error="...")`. Next statement continues. |
-| Missing table reference | `spark.sql()` throws `AnalysisException` ("Table or view not found"). Caught → `ExecutionResult(status=Error, error="...")`. Next statement continues. |
-| Missing column reference | Same — `AnalysisException`, caught and recorded. |
-| DDL statement | Skipped without execution. `ExecutionResult(status=Skipped)`. |
+| Syntax error in SQL | `spark.sql()` throws `ParseException`. Caught by `Try` → `Executed(stmt, Failure(e))`. Next statement continues. |
+| Missing table reference | `spark.sql()` throws `AnalysisException`. Caught by `Try` → `Executed(stmt, Failure(e))`. Next statement continues. |
+| Missing column reference | Same — `AnalysisException`, caught by `Try`. |
+| DDL statement | `Skipped(statement)` — not executed. |
 | Empty SQL string | Should not reach executor (filtered by SqlFileParser), but if it does: skip it. |
-| Statement that returns no rows | Success with `rowCount = Some(0)`. |
-| Ambiguous column reference | Spark resolves or throws `AnalysisException`. Caught if thrown. |
+| Statement that returns no rows | `Executed(stmt, Success(QueryResult(rowCount=0, ...)))`. |
+| Ambiguous column reference | Spark resolves or throws `AnalysisException`. Caught by `Try` if thrown. |
 
 **Why per-statement recovery matters:** A SQL source file may contain a mix of valid and invalid statements (e.g., a DDL preamble, a query referencing a table not in test data, and several valid queries). The executor must not abort the entire file on the first error — it reports each failure and continues, so downstream coverage analysis can still process the valid statements.
 
 ### 3.4 SparkSession Management
 
-Phase 1 does not create a SparkSession itself — tests will create `SparkSession.builder().master("local[*]").appName("test").getOrCreate()` in their test setup. The `DataLoader` and `SqlExecutor` receive a `SparkSession` parameter.
+Phase 1 does not create a SparkSession itself — tests will create `SparkSession.builder().master("local[*]").appName("test").getOrCreate()` in their test setup. `DataLoader` and `SqlExecutor` receive the `SparkSession` via constructor injection.
 
-In Phase 2, the `BasicCoverageEngine` will own SparkSession creation as part of its lifecycle. Phase 1 components are designed to be engine-agnostic by accepting SparkSession as a parameter.
+In Phase 2, the `BasicCoverageEngine` will own SparkSession creation and pass it to the `DataLoader` and `SqlExecutor` it constructs. Phase 1 components are designed to be engine-agnostic through this inversion of control.
 
 **Spark configuration for tests:**
 
@@ -234,18 +232,24 @@ SparkSession.builder()
 The Phase 1 data pipeline composes all components:
 
 ```
+                              SparkSession
+                                  │
+                          ┌───────┴───────┐
+                          ▼               ▼
+                    DataLoader(spark) SqlExecutor(spark)
+
 .sql files ──► SqlFileParser.parse() ──► Seq[SqlStatement]
                                                 │
 config.yaml ──► DataSourceConfig.resolve() ──► Map[String, Path]
                                                 │
                                                 ▼
-                                     DataLoader.loadAll(dataSources, spark)
+                                     dataLoader.loadAll(dataSources)
                                                 │
                                                 ▼
-                                     Spark temp views registered
+                                     Map[String, Try[DataFrame]]
                                                 │
                                                 ▼
-                                     SqlExecutor.executeAll(statements, spark)
+                                     sqlExecutor.executeAll(statements)
                                                 │
                                                 ▼
                                      Seq[ExecutionResult]
@@ -310,16 +314,16 @@ Tests use `SharedSparkSession` trait. Setup loads known CSVs into temp views bef
 
 | Test | What it verifies |
 |---|---|
-| Execute simple SELECT | `ExecutionResult(status=Success, rowCount=Some(n), schema=Some(...))` |
-| Execute SELECT with WHERE | Returns filtered row count |
-| Execute SELECT with JOIN | Joins across loaded tables, correct row count |
-| DDL statement is skipped | `CREATE TABLE ...` → `ExecutionResult(status=Skipped)` |
-| Multiple DDL keywords skipped | `DROP`, `ALTER`, `TRUNCATE`, `SET`, `USE` all return Skipped |
-| Syntax error recovery | Invalid SQL → `ExecutionResult(status=Error, error=...)` |
-| Missing table recovery | `SELECT * FROM nonexistent` → `ExecutionResult(status=Error)` |
-| Multiple statements mixed | DDL + valid + error → correct status for each, all processed |
-| Empty result set | `SELECT ... WHERE false_condition` → `Success, rowCount=Some(0)` |
-| WITH (CTE) queries | `WITH cte AS (...) SELECT ...` → classified as DML, executed |
+| Execute simple SELECT | `Executed(stmt, Success(QueryResult(n, schema)))` |
+| Execute SELECT with WHERE | Returns `Executed` with filtered row count in `QueryResult` |
+| Execute SELECT with JOIN | Joins across loaded tables, correct row count in `QueryResult` |
+| DDL statement is skipped | `CREATE TABLE ...` → `Skipped(statement)` |
+| Multiple DDL keywords skipped | `DROP`, `ALTER`, `TRUNCATE`, `SET`, `USE` all return `Skipped` |
+| Syntax error recovery | Invalid SQL → `Executed(stmt, Failure(ParseException))` |
+| Missing table recovery | `SELECT * FROM nonexistent` → `Executed(stmt, Failure(AnalysisException))` |
+| Multiple statements mixed | DDL + valid + error → correct type for each, all processed |
+| Empty result set | `SELECT ... WHERE false_condition` → `Executed(stmt, Success(QueryResult(0, ...)))` |
+| WITH (CTE) queries | `WITH cte AS (...) SELECT ...` → classified as DML, returns `Executed` |
 | `isDdl` classification | Direct tests of the classifier for all keyword categories |
 
 ### 4.4 DataPipelineIntegrationSpec (Integration Tests)
@@ -330,11 +334,11 @@ End-to-end tests composing all Phase 1 components. Uses `SharedSparkSession` and
 
 | Test | What it verifies |
 |---|---|
-| Parse SQL + load CSVs + execute | Full pipeline: parse `multi_statement.sql`, resolve data sources from config YAML, load CSVs, execute all statements, verify each produces `Success` with expected row counts |
+| Parse SQL + load CSVs + execute | Full pipeline: parse `multi_statement.sql`, resolve data sources from config YAML, load CSVs, execute all statements, verify each returns `Executed` with `Success(QueryResult(...))` and expected row counts |
 | Convention-based data loading | No YAML config — tables resolved by convention, loaded, queries execute |
-| Mixed DDL and DML file | Parse file with DDL + SELECT. DDL statements skipped, SELECT statements executed successfully |
-| Partial failure recovery | File has valid statement + statement referencing missing table. Valid statement succeeds, missing-table statement returns Error, pipeline continues |
-| Complex query execution | Parse `complex_query.sql` (JOINs, CASE, HAVING), load all required CSVs, execute, verify non-zero row counts |
+| Mixed DDL and DML file | Parse file with DDL + SELECT. DDL statements return `Skipped`, SELECT statements return `Executed` with `Success` |
+| Partial failure recovery | File has valid statement + statement referencing missing table. Valid statement returns `Executed(Success(...))`, missing-table statement returns `Executed(Failure(...))`, pipeline continues |
+| Complex query execution | Parse `complex_query.sql` (JOINs, CASE, HAVING), load all required CSVs, execute, verify non-zero row counts in `QueryResult` |
 
 ### 4.5 Test Resource Files
 
@@ -406,10 +410,10 @@ Individual component failures should not cascade. Each layer handles its own err
 | `DataSourceConfig` | Table not in config | Falls back to convention (`tableName.csv` in data dir) |
 | `DataLoader` | CSV file not found | `Failure(FileNotFoundException)` — does not throw from `loadAll`, continues loading other tables |
 | `DataLoader` | CSV parse failure | Spark's permissive mode absorbs most issues; `Success(df)` with nulls |
-| `SqlExecutor` | DDL statement | `ExecutionResult(status=Skipped)` — not an error |
-| `SqlExecutor` | SQL syntax error | Catches `ParseException` → `ExecutionResult(status=Error)` — continues |
-| `SqlExecutor` | Missing table | Catches `AnalysisException` → `ExecutionResult(status=Error)` — continues |
-| `SqlExecutor` | Runtime exception | Catches all `Exception` subtypes → `ExecutionResult(status=Error)` — continues |
+| `SqlExecutor` | DDL statement | `Skipped(statement)` — not an error |
+| `SqlExecutor` | SQL syntax error | `Executed(stmt, Failure(ParseException))` — continues |
+| `SqlExecutor` | Missing table | `Executed(stmt, Failure(AnalysisException))` — continues |
+| `SqlExecutor` | Runtime exception | `Executed(stmt, Failure(exception))` — continues |
 
 ### 5.2 Logging
 
@@ -443,7 +447,7 @@ The `spark-sql` dependency at test scope provides the runtime Spark needed for `
 ## 7. Implementation Order
 
 1. **Create `pom.xml`** with all dependencies and plugins
-2. **Create data models** — `ExpressionType.scala`, `CoverageModels.scala` (including `ExecutionResult`, `ExecutionStatus`)
+2. **Create data models** — `ExpressionType.scala`, `CoverageModels.scala` (including `ExecutionResult` ADT, `QueryResult`)
 3. **Implement `SqlFileParser`** with unit tests (`SqlFileParserSpec`)
 4. **Implement `DataSourceConfig`** with unit tests (`DataSourceConfigSpec`)
 5. **Create `SharedSparkSession`** test trait
@@ -471,7 +475,7 @@ These are explicitly out of scope and belong to later phases:
 
 ## 9. Open Questions
 
-1. **Schema representation** — The LLD uses `Seq[String]` (column names only) for `ExecutionResult.schema`. Should we also capture column types (as strings like `"IntegerType"`, `"StringType"`)? This would be useful for future data-type-aware coverage analysis but adds complexity. **Recommendation:** Start with column names only; add types if a future phase needs them.
+1. **Schema representation** — The LLD uses `Seq[String]` (column names only) for `QueryResult.schema`. Should we also capture column types (as strings like `"IntegerType"`, `"StringType"`)? This would be useful for future data-type-aware coverage analysis but adds complexity. **Recommendation:** Start with column names only; add types if a future phase needs them.
 
 2. **Row count performance** — `df.count()` triggers a full table scan on the result DataFrame. For large test datasets this could be slow. An alternative is `df.isEmpty` (just checks for any rows) plus `df.take(1)` for schema. **Recommendation:** Use `count()` — Phase 1 targets small test datasets. Optimize later if performance is a concern.
 
