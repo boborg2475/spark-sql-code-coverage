@@ -129,7 +129,7 @@ The system uses a `CoverageEngine` trait with two implementations, sharing all p
                               BranchCheckGenerator ──► Batched check queries
                                         │
                                         ▼
-.csv files ──► DataSourceConfig ──► SparkSession (temp tables)
+.csv files ──► DataSourceConfig ──► DataLoader ──► SparkSession (temp tables)
                                         │
                                         ▼
                               Execute check queries ──► coverage counts
@@ -308,9 +308,9 @@ Three packaging modes:
 
 1. **Cross-statement lineage** — The current design traces lineage within individual SQL statements. Tracing lineage across statement boundaries (e.g., through views or CTEs defined in earlier statements) is deferred to a future iteration. The data model supports it via `LineageGraph`, but the `LineageTracer` implementation will initially scope to single statements.
 
-2. **DDL handling** — Source `.sql` files may contain DDL statements (CREATE TABLE, DROP TABLE, etc.) alongside DML. The tool must gracefully skip DDL statements rather than fail. The exact classification logic (which statement types are coverable vs. skippable) needs to be defined during implementation.
+2. ~~**DDL handling**~~ — **Resolved in Phase 1 LLD.** SqlExecutor classifies statements using a first-keyword heuristic (`isDdl`). DDL statements (CREATE, DROP, ALTER, etc.) are returned as `Skipped(statement, SkipReason.DDL)` without execution.
 
-3. **Error recovery** — When a source SQL file contains a syntax error in one statement, should the tool skip that statement and continue with the rest of the file, or fail the entire file? The implementation plan implies graceful handling but does not specify the exact behavior. The recommended approach is: log a warning, skip the invalid statement, and continue processing.
+3. ~~**Error recovery**~~ — **Resolved in Phase 1 LLD.** SqlExecutor accepts a configurable `ErrorMode`: `FailFast` (default) stops on the first error, `Continue` skips the invalid statement and keeps processing. Both modes wrap failures in `Executed(stmt, Failure(exception))` for structured error reporting.
 
 4. **HAVING predicate check queries** — HAVING predicates require running the aggregate query to check coverage, which is more complex than simple WHERE-based checks. The exact batching strategy for HAVING checks (whether they can be combined with other checks) needs to be worked out during BranchCheckGenerator implementation.
 
