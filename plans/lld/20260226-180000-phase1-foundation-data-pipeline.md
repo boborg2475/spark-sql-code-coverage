@@ -98,40 +98,39 @@ case class ExecutionResult(
 
 **File:** `src/main/scala/com/bob/sparkcoverage/engine/DataLoader.scala`
 
-**Responsibility:** Given a `Map[String, Path]` (table name to CSV path) and a `SparkSession`, load each CSV file into a temporary view with the corresponding table name.
+**Responsibility:** Given a `Map[String, Path]` (table name to CSV path) and a `SparkSession`, load each CSV file into a temporary view with the corresponding table name. Returns a `Try[DataFrame]` per table — `Success` with the registered DataFrame, or `Failure` with the exception encountered.
 
 ```scala
 package com.bob.sparkcoverage.engine
 
 import java.nio.file.Path
-import org.apache.spark.sql.SparkSession
+import scala.util.Try
+import org.apache.spark.sql.{DataFrame, SparkSession}
 
 object DataLoader {
-
-  case class LoadResult(
-    tableName: String,
-    path: Path,
-    success: Boolean,
-    rowCount: Option[Long],
-    error: Option[String]
-  )
 
   def loadAll(
     dataSources: Map[String, Path],
     spark: SparkSession
-  ): Seq[LoadResult]
+  ): Map[String, Try[DataFrame]]
 }
 ```
 
 **Algorithm:**
 
 1. For each `(tableName, csvPath)` entry in `dataSources`:
-   a. Verify the file exists. If not, produce a `LoadResult` with `success = false` and an error message. Do not throw — continue to the next table.
-   b. Call `spark.read.option("header", "true").option("inferSchema", "true").csv(csvPath.toString)` to read the CSV.
-   c. Register the DataFrame as a temporary view: `df.createOrReplaceTempView(tableName)`.
-   d. Count rows via `df.count()` and return a `LoadResult` with `success = true`.
-   e. If any exception occurs during read/register, catch it and produce a `LoadResult` with `success = false`.
-2. Return all `LoadResult`s.
+   a. Wrap the entire load operation in a `Try`:
+      - Verify the file exists. If not, throw an appropriate exception (e.g., `FileNotFoundException`).
+      - Call `spark.read.option("header", "true").option("inferSchema", "true").csv(csvPath.toString)` to read the CSV.
+      - Register the DataFrame as a temporary view: `df.createOrReplaceTempView(tableName)`.
+      - Return the DataFrame.
+   b. The `Try` captures any exception (file not found, read failure, etc.) as a `Failure`.
+2. Return a `Map[String, Try[DataFrame]]` — table name to its load result.
+
+**Design decisions:**
+
+- Using `Try[DataFrame]` instead of a custom result type. `Success` gives callers direct access to the DataFrame for downstream operations. `Failure` preserves the full exception with type, message, and stack trace — no information loss.
+- The caller decides how to handle failures (log and continue, abort, etc.) rather than the DataLoader making that decision.
 
 **CSV loading options:**
 
@@ -144,9 +143,9 @@ object DataLoader {
 
 | Scenario | Behavior |
 |---|---|
-| CSV file does not exist | `LoadResult(success=false, error="File not found: ...")` |
-| CSV file is empty (no data rows) | Success — registers view with 0 rows. `rowCount = Some(0)`. |
-| CSV file is malformed (inconsistent columns) | Spark's CSV reader tolerates this by default (`PERMISSIVE` mode). Loads with nulls for missing fields. Returns success. |
+| CSV file does not exist | `Failure(FileNotFoundException(...))` |
+| CSV file is empty (no data rows) | `Success(df)` — view registered with 0 rows |
+| CSV file is malformed (inconsistent columns) | Spark's CSV reader tolerates this by default (`PERMISSIVE` mode). Loads with nulls for missing fields. `Success(df)` |
 | Duplicate table name | `createOrReplaceTempView` replaces silently. Last mapping wins. |
 
 ### 3.3 SqlExecutor
@@ -295,13 +294,13 @@ Tests use `SharedSparkSession` trait and temp files/directories.
 
 | Test | What it verifies |
 |---|---|
-| Load single CSV into temp view | DataFrame registered, correct row count, correct schema columns |
-| Load multiple CSVs | All temp views registered with correct names |
+| Load single CSV into temp view | Returns `Success(df)`, DataFrame registered as temp view, correct row count and schema columns |
+| Load multiple CSVs | All entries are `Success`, all temp views registered with correct names |
 | CSV with inferred types | Numeric columns inferred as IntegerType/DoubleType, not String |
-| Empty CSV (header only, no data) | View registered with 0 rows |
-| Missing CSV file | `LoadResult(success=false)` with error message; no exception thrown |
-| Malformed CSV | Loads with nulls in permissive mode; `LoadResult(success=true)` |
-| Verify temp view is queryable | After loading, `spark.sql("SELECT * FROM tableName")` works |
+| Empty CSV (header only, no data) | `Success(df)` — view registered with 0 rows |
+| Missing CSV file | Returns `Failure` containing `FileNotFoundException`; no exception thrown from `loadAll` |
+| Malformed CSV | `Success(df)` — loads with nulls in permissive mode |
+| Verify temp view is queryable | After loading, `spark.sql("SELECT * FROM tableName")` works on the `Success` DataFrame |
 
 ### 4.3 SqlExecutorSpec (Unit Tests)
 
@@ -405,8 +404,8 @@ Individual component failures should not cascade. Each layer handles its own err
 | `SqlFileParser` | Empty file | Returns empty `Seq[SqlStatement]` — not an error |
 | `DataSourceConfig` | Missing config file | `configFile = None` triggers pure convention-based resolution |
 | `DataSourceConfig` | Table not in config | Falls back to convention (`tableName.csv` in data dir) |
-| `DataLoader` | CSV file not found | `LoadResult(success=false)` — does not throw, continues loading other tables |
-| `DataLoader` | CSV parse failure | Spark's permissive mode absorbs most issues; `LoadResult(success=true)` with nulls |
+| `DataLoader` | CSV file not found | `Failure(FileNotFoundException)` — does not throw from `loadAll`, continues loading other tables |
+| `DataLoader` | CSV parse failure | Spark's permissive mode absorbs most issues; `Success(df)` with nulls |
 | `SqlExecutor` | DDL statement | `ExecutionResult(status=Skipped)` — not an error |
 | `SqlExecutor` | SQL syntax error | Catches `ParseException` → `ExecutionResult(status=Error)` — continues |
 | `SqlExecutor` | Missing table | Catches `AnalysisException` → `ExecutionResult(status=Error)` — continues |
@@ -419,7 +418,7 @@ Phase 1 uses `println`-based logging (stderr) for warnings and errors. A structu
 Logged events:
 - `[WARN] Skipping DDL statement: CREATE TABLE ... (file.sql:3)`
 - `[ERROR] Failed to execute statement (file.sql:5): Table or view not found: nonexistent_table`
-- `[WARN] Failed to load CSV for table 'orders': File not found: /path/to/orders.csv`
+- `[WARN] Failed to load CSV for table 'orders': java.io.FileNotFoundException: /path/to/orders.csv`
 
 ## 6. Dependencies and pom.xml
 
