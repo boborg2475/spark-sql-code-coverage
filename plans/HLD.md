@@ -259,6 +259,8 @@ WHERE region = 'US' AND amount > 50
 | **SparkSqlCoverage** | CLI entry point; wires config, engine, reporters | CLI args | Process exit code |
 | **CoverageConfig** | Parses CLI arguments via scopt | `Array[String]` | Typed config object |
 | **DataSourceConfig** | Resolves table→CSV mappings from YAML + convention fallback | Config file path, data dir, required table names | `Map[String, Path]` |
+| **DataLoader** | Loads CSV files into Spark temporary views | `Map[String, Path]`, SparkSession | `Map[String, Try[DataFrame]]` |
+| **SqlExecutor** | Executes SQL statements against Spark with configurable error handling | `Seq[SqlStatement]`, SparkSession, ErrorMode | `Seq[ExecutionResult]` |
 | **SqlFileParser** | Reads `.sql` files, splits on semicolons, tracks line numbers | `.sql` file paths | `Seq[SqlStatement]` |
 | **ExpressionExtractor** | Walks Catalyst AST to find coverable expressions | Parsed LogicalPlan | `Seq[CoverableExpression]` |
 | **BranchCheckGenerator** | Generates batched check queries per expression | CoverableExpressions, source table | Batched check query SQL |
