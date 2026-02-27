@@ -6,68 +6,58 @@ Prove the core infrastructure works end-to-end: parse SQL files, load CSV test d
 
 ## 2. Component Inventory
 
-### 2.1 Already Implemented
-
-These components exist on `feature/phase-1` and are covered by unit and acceptance tests.
-
 | Component | File | Purpose |
 |---|---|---|
 | `ExpressionType` | `model/ExpressionType.scala` | Sealed trait with 10 coverable expression types |
-| `CoverageModels` | `model/CoverageModels.scala` | All data model case classes (SqlStatement, coverage hierarchy, lineage types, DataSource) |
+| `CoverageModels` | `model/CoverageModels.scala` | All data model case classes (SqlStatement, coverage hierarchy, lineage types, DataSource, ExecutionResult, ExecutionStatus) |
 | `SqlFileParser` | `parser/SqlFileParser.scala` | Reads `.sql` files, strips comments, splits on semicolons, tracks line numbers |
 | `DataSourceConfig` | `config/DataSourceConfig.scala` | YAML config parsing + convention-based `tableName.csv` fallback |
-
-### 2.2 To Be Implemented
-
-| Component | File | Purpose |
-|---|---|---|
 | `DataLoader` | `engine/DataLoader.scala` | Loads CSV files into Spark temporary views |
 | `SqlExecutor` | `engine/SqlExecutor.scala` | Executes SQL statements against Spark, captures results, handles errors |
-| Execution models | `model/CoverageModels.scala` | `ExecutionResult`, `ExecutionStatus` — result types for SQL execution |
 
-### 2.3 File Layout After Phase 1
+### File Layout After Phase 1
 
 ```
 src/main/scala/com/bob/sparkcoverage/
 ├── config/
-│   └── DataSourceConfig.scala        (exists)
+│   └── DataSourceConfig.scala
 ├── engine/
-│   ├── DataLoader.scala              (new)
-│   └── SqlExecutor.scala             (new)
+│   ├── DataLoader.scala
+│   └── SqlExecutor.scala
 ├── model/
-│   ├── CoverageModels.scala          (modified — add execution models)
-│   └── ExpressionType.scala          (exists)
+│   ├── CoverageModels.scala
+│   └── ExpressionType.scala
 └── parser/
-    └── SqlFileParser.scala           (exists)
+    └── SqlFileParser.scala
 
 src/test/scala/com/bob/sparkcoverage/
 ├── acceptance/
-│   ├── CoverageModelsAcceptanceSpec.scala       (exists)
-│   ├── DataSourceConfigAcceptanceSpec.scala      (exists)
-│   ├── Phase1IntegrationAcceptanceSpec.scala     (exists)
-│   └── SqlFileParserAcceptanceSpec.scala         (exists)
+│   ├── CoverageModelsAcceptanceSpec.scala
+│   ├── DataSourceConfigAcceptanceSpec.scala
+│   ├── Phase1IntegrationAcceptanceSpec.scala
+│   └── SqlFileParserAcceptanceSpec.scala
 ├── config/
-│   └── DataSourceConfigSpec.scala               (exists)
+│   └── DataSourceConfigSpec.scala
 ├── engine/
-│   ├── DataLoaderSpec.scala                     (new)
-│   └── SqlExecutorSpec.scala                    (new)
+│   ├── DataLoaderSpec.scala
+│   └── SqlExecutorSpec.scala
 ├── integration/
-│   └── DataPipelineIntegrationSpec.scala        (new)
+│   └── DataPipelineIntegrationSpec.scala
 └── parser/
-    └── SqlFileParserSpec.scala                  (exists)
+    └── SqlFileParserSpec.scala
 
 src/test/resources/
-├── acceptance/                                  (exists — acceptance test fixtures)
+├── acceptance/
 │   ├── config/
 │   ├── data/
 │   └── sql/
-├── data/                                        (new — unit/integration test CSV fixtures)
+├── data/
 │   ├── orders.csv
 │   ├── customers.csv
 │   ├── products.csv
 │   ├── empty.csv
 │   └── malformed.csv
-└── sql/                                         (new — unit/integration test SQL fixtures)
+└── sql/
     ├── simple_select.sql
     ├── multi_statement.sql
     ├── ddl_mixed.sql
@@ -77,7 +67,7 @@ src/test/resources/
 
 ## 3. Detailed Design
 
-### 3.1 Execution Models (additions to `CoverageModels.scala`)
+### 3.1 Execution Models (`CoverageModels.scala`)
 
 ```scala
 /** Status of a single SQL statement execution. */
@@ -242,7 +232,7 @@ SparkSession.builder()
 
 ### 3.5 Integration: End-to-End Data Pipeline
 
-The Phase 1 data pipeline composes existing and new components:
+The Phase 1 data pipeline composes all components:
 
 ```
 .sql files ──► SqlFileParser.parse() ──► Seq[SqlStatement]
@@ -347,7 +337,7 @@ End-to-end tests composing all Phase 1 components. Uses `SharedSparkSession` and
 | Partial failure recovery | File has valid statement + statement referencing missing table. Valid statement succeeds, missing-table statement returns Error, pipeline continues |
 | Complex query execution | Parse `complex_query.sql` (JOINs, CASE, HAVING), load all required CSVs, execute, verify non-zero row counts |
 
-### 4.5 Test Resource Files (New)
+### 4.5 Test Resource Files
 
 These resources serve unit and integration tests (not acceptance tests, which have their own fixtures under `acceptance/`).
 
@@ -386,7 +376,7 @@ SELECT * FROM nonexistent_table;
 SELECT * FROM customers;
 ```
 
-**`src/test/resources/data/`** — Reuse the same CSV content as `acceptance/data/` (orders, customers, products) plus:
+**`src/test/resources/data/orders.csv`, `customers.csv`, `products.csv`** — Standard test data files with headers and sample rows. Additionally:
 
 **`src/test/resources/data/empty.csv`**
 ```csv
@@ -431,26 +421,39 @@ Logged events:
 - `[ERROR] Failed to execute statement (file.sql:5): Table or view not found: nonexistent_table`
 - `[WARN] Failed to load CSV for table 'orders': File not found: /path/to/orders.csv`
 
-## 6. Dependencies and pom.xml Changes
+## 6. Dependencies and pom.xml
 
-No changes to `pom.xml` are required. All dependencies needed for Phase 1 are already declared:
+Phase 1 requires creating the `pom.xml` with the following dependencies:
 
-- `spark-sql` (provided + test scope) — SparkSession, DataFrame, CSV reader
-- `spark-catalyst` (provided) — available transitively through spark-sql
-- `scalatest` (test) — test framework
-- `scala-library` — standard library
+| Dependency | Scope | Purpose |
+|---|---|---|
+| `scala-library` (2.13.x) | compile | Scala standard library |
+| `spark-sql` (3.5.x) | provided + test | SparkSession, DataFrame, CSV reader |
+| `spark-catalyst` (3.5.x) | provided | Available transitively through spark-sql |
+| `scalatest` (3.x) | test | Test framework |
+| `jackson-dataformat-yaml` | compile | YAML config file parsing (bundled with Spark at runtime, needed for compile) |
+
+The `pom.xml` must also configure:
+- `scala-maven-plugin` for Scala compilation
+- `maven-shade-plugin` for fat JAR packaging
+- `scalatest-maven-plugin` for running ScalaTest suites
+- `owasp dependency-check-maven` and `spotbugs-maven-plugin` for quality checks (per CLAUDE.md)
 
 The `spark-sql` dependency at test scope provides the runtime Spark needed for `DataLoader` and `SqlExecutor` tests.
 
 ## 7. Implementation Order
 
-1. **Add execution models** to `CoverageModels.scala` (`ExecutionResult`, `ExecutionStatus`)
-2. **Create `SharedSparkSession`** test trait
-3. **Create test resource files** (SQL fixtures, CSV fixtures)
-4. **Implement `DataLoader`** with unit tests (`DataLoaderSpec`)
-5. **Implement `SqlExecutor`** with unit tests (`SqlExecutorSpec`)
-6. **Write `DataPipelineIntegrationSpec`** — integration tests composing all components
-7. **Verify all tests pass** — `mvn test` including existing acceptance tests
+1. **Create `pom.xml`** with all dependencies and plugins
+2. **Create data models** — `ExpressionType.scala`, `CoverageModels.scala` (including `ExecutionResult`, `ExecutionStatus`)
+3. **Implement `SqlFileParser`** with unit tests (`SqlFileParserSpec`)
+4. **Implement `DataSourceConfig`** with unit tests (`DataSourceConfigSpec`)
+5. **Create `SharedSparkSession`** test trait
+6. **Create test resource files** (SQL fixtures, CSV fixtures)
+7. **Implement `DataLoader`** with unit tests (`DataLoaderSpec`)
+8. **Implement `SqlExecutor`** with unit tests (`SqlExecutorSpec`)
+9. **Write acceptance tests** — `CoverageModelsAcceptanceSpec`, `DataSourceConfigAcceptanceSpec`, `SqlFileParserAcceptanceSpec`, `Phase1IntegrationAcceptanceSpec`
+10. **Write `DataPipelineIntegrationSpec`** — integration tests composing all components
+11. **Verify all tests pass** — `mvn test` including acceptance tests
 
 Each step should produce a passing test suite before moving to the next.
 
