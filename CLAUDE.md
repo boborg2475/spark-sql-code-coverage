@@ -27,7 +27,7 @@ mvn package          # Build fat JAR (with shade plugin)
 
 ## Architecture
 
-Two-engine design behind a shared `CoverageEngine` trait. See `plans/implementation-plan.md` for detailed project structure, data models, key interfaces, and algorithm specifics.
+Two-engine design behind a shared `CoverageEngine` trait. See `plans/HLD.md` for architecture overview and `plans/lld/` for detailed component designs.
 
 - **BasicCoverageEngine** — SparkSession-based. Loads CSVs, generates check queries, evaluates coverage.
 - **CatalystCoverageEngine** — Extends Basic. Uses QueryExecutionListener to detect optimizer-pruned branches.
@@ -61,7 +61,6 @@ mvn verify                # Runs tests + dependency-check + spotbugs
 
 - Create a feature branch for each feature: `feature/<feature-name>` (e.g., `feature/html-reporter`)
 - When the feature is complete, create a PR against `main` using `gh pr create`
-- **Parallel sub-agents**: When multiple agents work on different features in parallel, each agent creates its own feature branch. All agent feature branches should PR into a shared integration branch (e.g., `feature/phase-1`). Once all work is integrated there, create a single PR from the shared branch into `main`.
 - Do not merge your own PR — leave it for review
 - **Commit messages**: Do not add `Co-Authored-By` lines for Claude. They are unnecessary.
 
@@ -69,17 +68,18 @@ mvn verify                # Runs tests + dependency-check + spotbugs
 
 **The plan is always the first step.** Before any implementation begins on a new feature, you must write and commit a plan document. No code should be written, no files created or modified, until the plan exists and has been reviewed.
 
-Create the plan document in the `plans/` directory. The filename should follow this format:
+Plan documents live in the `plans/` directory, organized by type:
 
 ```
-plans/YYYYMMDD-HHMMSS-<feature-name>.md
+plans/
+├── HLD.md                          # High-Level Design (single document, whole project)
+├── lld/                             # Low-Level Designs (one per phase/feature)
+│   └── YYYYMMDD-HHMMSS-<name>.md
+└── specs/                           # EARs / acceptance specs (one per phase/feature)
 ```
 
-For example: `plans/20260226-143000-html-reporter.md`
+- **HLD** — Architecture overview, data model summary, key design decisions, component inventory
+- **LLD** — Detailed component design, algorithms, error handling, test strategy for a specific phase or feature
+- **Specs** — Executable acceptance requirements that define done criteria for a phase or feature
 
-The plan should cover:
-- **Goal** — What the feature does and why
-- **Affected files** — Which files will be created or modified
-- **Approach** — Key design decisions and implementation steps
-- **Testing** — How the feature will be tested
-- **Open questions** — Anything that needs clarification before starting
+LLD and spec filenames use the timestamp convention: `YYYYMMDD-HHMMSS-<feature-name>.md`
