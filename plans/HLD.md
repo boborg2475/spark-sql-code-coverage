@@ -315,3 +315,5 @@ Three packaging modes:
 4. **HAVING predicate check queries** — HAVING predicates require running the aggregate query to check coverage, which is more complex than simple WHERE-based checks. The exact batching strategy for HAVING checks (whether they can be combined with other checks) needs to be worked out during BranchCheckGenerator implementation.
 
 5. **Subquery predicate coverage** — EXISTS, IN (subquery), and scalar subqueries involve nested query evaluation. The check query generation strategy for these expression types may need special handling beyond the standard SUM(CASE WHEN ...) pattern.
+
+6. **Parallel check query execution** — Batching reduces query count significantly (one per table/context group), but for projects with many distinct table/context combinations, sequential execution could become slow. Parallel submission of independent batched queries via Scala Futures is feasible (SparkSession is thread-safe, local[*] supports concurrent jobs) but adds complexity. Decide during implementation whether this optimization is needed based on observed performance.
